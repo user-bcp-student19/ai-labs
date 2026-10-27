@@ -1,4 +1,3 @@
-import base64
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,11 +8,11 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.main import create_app, legacy_identity
+from jwt_support import sign_token
 
 
 def token(username: str = "student", role: str = "STUDENT") -> str:
-    raw = f"{username}|{role}|{int(time.time()) + 3600}|WORKSHOP_SECRET_2026"
-    return base64.b64encode(raw.encode()).decode()
+    return sign_token(username, role)
 
 
 def headers(username: str = "student", role: str = "STUDENT") -> dict[str, str]:
@@ -28,8 +27,7 @@ def test_legacy_token_resolves_username_and_role() -> None:
 
 
 def test_legacy_token_rejects_expired_token() -> None:
-    expired_payload = f"student|STUDENT|{int(time.time()) - 1}|WORKSHOP_SECRET_2026"
-    expired_token = base64.b64encode(expired_payload.encode()).decode()
+    expired_token = sign_token(expires_at=int(time.time()) - 1)
 
     with pytest.raises(HTTPException) as error:
         legacy_identity(f"Bearer {expired_token}")

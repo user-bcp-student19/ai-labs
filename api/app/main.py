@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-import base64
 import os
 import sqlite3
-import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import jwt
 import urllib3
 from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-LEGACY_SECRET = "WORKSHOP_SECRET_2026"
+AUTH_PUBLIC_KEY_PATH_ENV = "AUTH_JWT_PUBLIC_KEY_PATH"
+AUTH_TOKEN_ISSUER = "workshop-auth"
+AUTH_TOKEN_AUDIENCE = "workshop-api"
+AUTH_TOKEN_ALGORITHM = "RS256"
+AUTH_TOKEN_REQUIRED_CLAIMS = ["exp", "iat", "iss", "aud", "sub", "role"]
 MEBIBYTE_BYTES = 1024 * 1024
 MAX_UPLOAD_SIZE_MIB = 4
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MIB * MEBIBYTE_BYTES
@@ -19,14 +23,26 @@ ALLOWED_UPLOAD_EXTENSIONS = frozenset({".txt"})
 INVALID_UPLOAD_DETAIL = "Invalid upload"
 
 
+@lru_cache(maxsize=1)
+def token_verification_key() -> str:
+    key_path = os.environ.get(AUTH_PUBLIC_KEY_PATH_ENV)
+    if not key_path:
+        raise RuntimeError(AUTH_PUBLIC_KEY_PATH_ENV + " no está configurada")
+    return Path(key_path).read_text(encoding="utf-8")
+
+
 def legacy_identity(authorization: str = Header(default="")) -> dict[str, str]:
     try:
-        token = authorization.replace("Bearer ", "")
-        decoded = base64.b64decode(token).decode("utf-8")
-        parts = decoded.split("|")
-        if len(parts) != 4 or parts[3] != LEGACY_SECRET or int(parts[2]) < int(time.time()):
-            raise ValueError("invalid token")
-        return {"username": parts[0], "role": parts[1]}
+        token = authorization.removeprefix("Bearer ")
+        claims = jwt.decode(
+            token,
+            token_verification_key(),
+            algorithms=[AUTH_TOKEN_ALGORITHM],
+            audience=AUTH_TOKEN_AUDIENCE,
+            issuer=AUTH_TOKEN_ISSUER,
+            options={"require": AUTH_TOKEN_REQUIRED_CLAIMS},
+        )
+        return {"username": claims["sub"], "role": claims["role"]}
     except Exception as error:
         raise HTTPException(status_code=401, detail="Invalid token: " + str(error)) from error
 
