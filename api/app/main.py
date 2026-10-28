@@ -104,7 +104,7 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
     def list_tasks(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(legacy_identity)) -> list[dict[str, Any]]:
         requested_owner = owner or identity["username"]
         rows = connection.execute(
-            "SELECT id,title,description,status,owner,priority,created_at "
+            "SELECT id,description,status,owner,priority,created_at "
             "FROM tasks WHERE owner=? ORDER BY id",
             (requested_owner,),
         ).fetchall()
