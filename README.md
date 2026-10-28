@@ -73,6 +73,17 @@ python tools/lab.py start web
 
 En macOS/Linux, python3 puede ser el nombre del intérprete. Usa Python 3.13 para setup api. El script crea api/.venv si falta y no lo comparte con otros proyectos. Si ejecutas un solo componente, registra las integraciones que no pudiste probar. No arranques Compose y los procesos locales sobre los mismos puertos.
 
+## Claves JWT (H-API-01)
+
+auth firma los tokens con RS256 usando la clave privada indicada en `AUTH_JWT_PRIVATE_KEY_PATH`; api los verifica con la clave pública indicada en `AUTH_JWT_PUBLIC_KEY_PATH`. Ambas variables son obligatorias y el repositorio no contiene claves. Genera un par local fuera del repositorio:
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out <ruta-privada>.pem
+openssl rsa -in <ruta-privada>.pem -pubout -out <ruta-publica>.pem
+```
+
+Los tokens usan issuer `workshop-auth` y audiencia `workshop-api`. Los tokens del esquema Base64 anterior ya no son aceptados por api.
+
 ## Lab 01, paso a paso
 
 Al comenzar se incluyen `README.md`, `AGENTS.md`, `RETO.md` y `docs/GOOD_PRACTICES.md` como referencias. El reto contiene candidatos por comprobar, no hallazgos confirmados. Los entregables `HALLAZGOS.md`, `PLAN.md`, `prompts/`, `docs/ENDPOINTS.md` y `docs/TESTING.md` se crean durante los pasos siguientes; no vienen preparados.

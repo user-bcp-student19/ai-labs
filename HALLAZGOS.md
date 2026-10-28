@@ -1,15 +1,54 @@
-# Hallazgos
+# HU-01 - Token firmado con expiracion y claims minimos
 
-Discovery de `api/`. `docs/ENDPOINTS.md` no existe; no se crea en este paso.
-Los contratos se derivan del código observado y no han sido acordados por una
-revisión humana. Cada hallazgo conserva su estado individual.
+## Veredicto
+**Usable con ajustes.** La historia conecta seguridad, configuracion, testing y evidencia.
 
-| id | componente | hallazgo | tipo | explicacion | evidencia (archivo:linea) | severidad | estado |
-|---|---|---|---|---|---|---|---|
-| H-API-01 | api | Token Base64 con secreto embebido y sin firma criptográfica | Vulnerabilidad | La dependencia de identidad decodifica el token Base64, valida un secreto constante y la expiración, pero no verifica firma, emisor ni audiencia. Si el secreto del código se conoce, un cliente puede construir tokens con identidad y rol elegidos; la codificación Base64 no prueba autenticidad. | api/app/main.py:14,17-26; api/tests/test_api.py:9-10 | alta | Pendiente |
-| H-API-02 | api | El cliente controla el owner de lectura y creación de tareas | Vulnerabilidad | `GET /api/tasks` y `GET /api/summary` aceptan `owner` de query y `POST /api/tasks` permite asignarlo desde el cuerpo, en lugar de limitarlo a la identidad autenticada. La prueba `test_rejects_student_reading_trainer_tasks` falla: con token STUDENT, HTTP 200 incluye una tarea de TRAINER. La mitigación provisional de lectura fue revertida a petición. | api/app/main.py:88-96,101-110,121-127; api/tests/test_api.py:97-106 | alta | Pendiente |
-| H-API-03 | api | Valores de entrada concatenados en consultas SQLite | Vulnerabilidad | El owner de lectura se concatenaba en tareas/resumen y los campos de creación en el `INSERT`. Resuelto: todos los valores dinámicos de esas consultas, incluida la lectura por ID insertado, usan parámetros enlazados. | api/app/main.py:88-126; api/tests/test_api.py:46-85 | alta | Resuelto |
-| H-API-04 | api | Nombre de archivo recibido se usa directamente al escribir la carga | Vulnerabilidad | `file.filename` se incorpora a la ruta de destino sin normalización ni restricción de nombre/extensión; además, se lee el contenido completo y se escribe sin límite de tamaño visible. Resuelto: solo se admiten `.txt` hasta 4 MiB y se rechazan nombres con separadores. | api/app/main.py:16-18,34-45,128-140; api/tests/test_api.py:87-180 | alta | Resuelto |
-| H-API-05 | api | Rutas, persistencia, reglas y serialización están concentradas en un módulo | Refactor | `create_app` abre SQLite y crea la tabla; las rutas ejecutan consultas y algunas construyen respuestas/reglas de negocio en el mismo módulo. Esto acopla HTTP, acceso a datos y lógica, haciendo más difícil probar y modificar cada responsabilidad de forma aislada. | api/app/main.py:29-43,56-65,67-105,107-125 | media | Pendiente |
-| H-API-06 | api | Versiones señaladas para revisión SCA están fijadas, pero el riesgo de advisories no está verificado | Sugerencia | El manifiesto fija `urllib3==2.5.0` y `python-multipart==0.0.21`, como indica el reto. La presencia de las versiones está confirmada; no se ha investigado si hay advisories aplicables ni se afirma que exista una vulnerabilidad explotable. | api/requirements.txt:4-5 | media | Pendiente |
-| H-API-07 | api | Tipado genérico, excepciones amplias y condicionales anidados | Refactor | El endpoint de creación acepta un `dict[str, Any]`; autenticación y backend-health capturan `Exception`, y `summary` anida condiciones. Esto reduce validación estática y claridad; en backend-health, una excepción se devuelve como cuerpo con estado interno `0`, y en autenticación se expone su texto en el detalle 401. | api/app/main.py:8,17-26,78,97-104,115-121 | baja | Pendiente |
+## Contexto
+El servicio de autenticacion expone `POST /auth/login` y devuelve `token`, `expiresIn` y `user`. La implementacion usa firma HMAC y lee `AUTH_TOKEN_SECRET`.
+
+## Ajustes necesarios
+- Exigir los claims `sub`, `client`, `iat` y `exp`.
+- Obtener `client` desde la solicitud, validarlo y reflejarlo en el token.
+- Comprobar que `expiresIn` coincide con `exp - now` usando una tolerancia documentada.
+- Eliminar el secreto por defecto fuera del laboratorio o documentarlo como exclusivo de laboratorio.
+- Evitar logs del token y del secreto.
+- Mantener como decision tecnica si se conserva HMAC o se adopta una libreria JWT.
+
+## Criterios de aceptacion
+- Un token valido contiene `sub`, `client`, `iat` y `exp`.
+- `expiresIn` es coherente con `exp - now` dentro de la tolerancia definida.
+- Login valido, credenciales invalidas y token expirado tienen pruebas.
+- No se registran tokens, secretos ni valores sensibles.
+- La decision sobre HMAC frente a una libreria JWT queda documentada.
+
+## Evidencia esperada
+- Documento generado por los Skills a partir de este archivo.
+- Pruebas de claims, expiracion y errores de autenticacion.
+- Configuracion documentada de `AUTH_TOKEN_SECRET`.
+- Evidencia de logs redactados.
+
+## Discovery de api — candidatos
+
+### H-API-08 — `/api/backend-health` expone el cuerpo de respuesta y detalles de error del servicio upstream
+- Estado: CANDIDATO
+- Evidencia: `api/app/main.py:157,160-163`; `api/tests/test_api.py:277-298` comprueba que el detalle de una excepción se devuelve en el cuerpo.
+- Impacto: un usuario autenticado puede recibir información de diagnóstico del servicio dependiente que podría revelar detalles internos; no se ha verificado que el cuerpo real contenga datos sensibles.
+- Prioridad propuesta: Media, pendiente de confirmar qué información devuelve el servicio dependiente y quién debe consumirla.
+- Contrato potencialmente afectado: respuesta de `GET /api/backend-health`, en particular los campos `status` y `body`.
+- Cómo validarlo: probar respuestas y errores representativos del servicio dependiente y comprobar si la respuesta pública revela detalles que el contrato acordado considere internos; definir y probar el comportamiento público esperado.
+
+### H-API-09 — Las cargas con el mismo nombre comparten destino y pueden sobrescribirse
+- Estado: CANDIDATO
+- Evidencia: `api/app/main.py:141-148` construye el destino con el nombre validado y escribe con `write_bytes`; `api/tests/test_api.py:387-404` verifica el almacenamiento bajo un nombre fijo.
+- Impacto: una carga posterior con el mismo nombre puede reemplazar el contenido anterior en el directorio compartido, afectando la integridad o disponibilidad del archivo para otros usuarios autenticados.
+- Prioridad propuesta: Media, sujeta a confirmar si sobrescribir archivos con nombre coincidente es el comportamiento esperado.
+- Contrato potencialmente afectado: `POST /api/requirements`, su política de colisiones y los campos `fileName` y `storedAt` de la respuesta.
+- Cómo validarlo: cargar dos contenidos con el mismo nombre bajo identidades distintas y verificar el comportamiento actual; acordar la política de colisión y añadir una prueba que compruebe el resultado esperado.
+
+### H-API-10 — La política CORS permite cualquier origen con credenciales
+- Estado: CANDIDATO
+- Evidencia: `api/app/main.py:68-74` configura `allow_origins=["*"]` junto con `allow_credentials=True`.
+- Impacto: amplía a cualquier origen el acceso CORS con credenciales del navegador; el impacto concreto depende de los mecanismos de credenciales utilizados por el frontend y no se confirma en este hallazgo.
+- Prioridad propuesta: Media, pendiente de contrastar con los orígenes y mecanismos de autenticación autorizados.
+- Contrato potencialmente afectado: política de acceso cross-origin de los endpoints de la API.
+- Cómo validarlo: enviar solicitudes preflight y solicitudes con `Origin` de orígenes permitidos y no permitidos; comparar los encabezados de respuesta con la política acordada y los requisitos del frontend.
