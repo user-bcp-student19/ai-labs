@@ -39,8 +39,15 @@ def test_lists_seeded_tasks(tmp_path: Path) -> None:
     app = create_app(str(tmp_path / "workshop.db"), str(tmp_path / "uploads"))
     with TestClient(app) as client:
         response = client.get("/api/tasks", headers=headers())
+    tasks = response.json()
+
     assert response.status_code == 200
-    assert len(response.json()) == 2
+    assert [task["id"] for task in tasks] == [1, 2]
+    assert all(
+        set(task)
+        == {"id", "title", "description", "status", "owner", "priority", "createdAt"}
+        for task in tasks
+    )
 
 
 def test_characterizes_owner_filter_with_regular_owner(tmp_path: Path) -> None:
@@ -89,6 +96,15 @@ def test_creates_task_with_quoted_fields(tmp_path: Path) -> None:
     assert response.status_code == 201
     assert response.json()["title"] == "Manager's notes"
     assert response.json()["description"] == "User's acceptance criteria"
+    assert set(response.json()) == {
+        "id",
+        "title",
+        "description",
+        "status",
+        "owner",
+        "priority",
+        "createdAt",
+    }
 
 
 def test_rejects_student_reading_trainer_tasks(tmp_path: Path) -> None:

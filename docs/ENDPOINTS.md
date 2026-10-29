@@ -5,22 +5,22 @@
 Esta seccion describe el comportamiento observado en la implementacion actual
 de `api/app/main.py`; no constituye un contrato aprobado para cambiar
 comportamientos. La base local indicada en `README.md` es
-`http://localhost:8000`. Los ejemplos usan un token ficticio compatible con el
-token Base64 legado del laboratorio, exclusivamente para pruebas locales. No
-es un JWT firmado ni debe usarse en produccion.
+`http://localhost:8000`. Los ejemplos de autenticación usan el placeholder
+`<jwt-firmado>`; sustitúyelo por un token de prueba válido en el entorno local.
 
 ### Autenticacion observada
 
-Las cinco operaciones de ruta requieren el header exacto:
+Las cinco operaciones de ruta requieren un Bearer JWT firmado con RS256:
 
 ```http
-Authorization: Bearer c3R1ZGVudHxTVFVERU5UfDQxMDI0NDQ4MDB8V09SS1NIT1BfU0VDUkVUXzIwMjY=
+Authorization: Bearer <jwt-firmado>
 ```
 
-El ejemplo se decodifica como `student|STUDENT|4102444800|WORKSHOP_SECRET_2026`.
-La API solo comprueba la estructura, el secreto fijo y que la expiracion no
-haya pasado; no valida firma criptografica, issuer ni audience. No usar este
-valor fuera del laboratorio local.
+La API verifica la firma RS256 con la clave pública configurada en
+`AUTH_JWT_PUBLIC_KEY_PATH`, exige el issuer `workshop-auth` y la audience
+`workshop-api`, y valida la expiración. También exige los claims `iat`, `sub`
+y `role`. Credenciales ausentes o inválidas producen HTTP 401. El placeholder
+no es un token utilizable ni contiene credenciales.
 
 ### Contrato acordado y preguntas abiertas
 
@@ -51,14 +51,14 @@ o invalido produce HTTP 401.
 | Campo/parametro | Tipo | Obligatorio | Descripcion |
 |---|---|---:|---|
 | `owner` (query) | string | No | Owner usado como filtro. Si se omite o esta vacio, se usa el username decodificado del token. La implementacion no lo restringe a la identidad autenticada. |
-| `Authorization` (header) | string | Si | Debe usar el esquema `Bearer ` seguido del token Base64 legado. |
+| `Authorization` (header) | string | Si | Debe usar `Bearer ` seguido de un JWT firmado válido según la sección Autenticación observada. |
 
 Ejemplo completo:
 
 ```http
 GET /api/tasks?owner=student HTTP/1.1
 Host: localhost:8000
-Authorization: Bearer c3R1ZGVudHxTVFVERU5UfDQxMDI0NDQ4MDB8V09SS1NIT1BfU0VDUkVUXzIwMjY=
+Authorization: Bearer <jwt-firmado>
 ```
 
 ### 4. Response exitosa
@@ -106,16 +106,16 @@ La fecha del ejemplo depende del instante en que se inicializa la base.
 
 | Codigo | Cuando ocurre | Ejemplo de cuerpo |
 |---:|---|---|
-| 401 | Falta el header o el token Base64 no puede validarse. El detalle puede variar según el error detectado. | `{"detail":"Invalid token: invalid token"}` |
+| 401 | Falta el header o el token no puede validarse. El detalle puede variar según el error detectado. | `{"detail":"Invalid token: invalid token"}` |
 | 500 | Una excepcion interna no manejada, por ejemplo un fallo SQLite. FastAPI/Starlette responde texto plano en la configuracion actual. | `Internal Server Error` |
 
 ### 6. Notas de seguridad
 
 - El query `owner` permite seleccionar tareas de otra identidad; H-API-02
-  sigue pendiente. Ademas, el token Base64 no esta firmado y el cliente puede
-  fabricar el username (H-API-01 pendiente).
-- El token no está firmado y el detalle del 401 puede incluir texto de
-  excepcion (H-API-01/H-API-07 pendientes).
+  sigue pendiente.
+- La identidad se obtiene de un JWT firmado y validado como se describe arriba
+  (H-API-01). El detalle del 401 puede incluir texto de excepción (H-API-07
+  pendiente).
 
 ## `POST /api/tasks`
 
@@ -140,14 +140,14 @@ El body debe ser un objeto JSON. Los campos se convierten a texto mediante
 | `status` (body) | valor JSON convertido a string | No | Estado. Default: `"TODO"`. |
 | `priority` (body) | valor JSON convertido a string | No | Prioridad. Default: `"MEDIUM"`. |
 | `owner` (body) | valor JSON convertido a string | No | Owner. Default: username del token. Actualmente un valor suministrado por el cliente puede asignar otra identidad. |
-| `Authorization` (header) | string | Si | Debe usar `Bearer ` seguido del token Base64 legado. |
+| `Authorization` (header) | string | Si | Debe usar `Bearer ` seguido de un JWT firmado válido según la sección Autenticación observada. |
 
 Ejemplo completo:
 
 ```http
 POST /api/tasks HTTP/1.1
 Host: localhost:8000
-Authorization: Bearer c3R1ZGVudHxTVFVERU5UfDQxMDI0NDQ4MDB8V09SS1NIT1BfU0VDUkVUXzIwMjY=
+Authorization: Bearer <jwt-firmado>
 Content-Type: application/json
 
 {
@@ -203,8 +203,8 @@ El ID y la fecha dependen del estado y del instante de la base.
   parámetros enlazados (H-API-03 resuelto).
 - `owner` sigue viniendo del body si se proporciona; la ruta no fuerza la
   identidad del token (H-API-02 pendiente).
-- La autenticación Base64 no verifica firma, issuer ni audience; no tratarla
-  como credencial segura fuera del laboratorio.
+- La autenticación exige un JWT firmado RS256 con issuer, audience y
+  expiración válidos; no admite el token Base64 legado (H-API-01).
 
 ## `GET /api/summary`
 
@@ -223,14 +223,14 @@ o invalido produce HTTP 401.
 | Campo/parametro | Tipo | Obligatorio | Descripcion |
 |---|---|---:|---|
 | `owner` (query) | string | No | Owner del resumen. Si se omite o es vacio, se usa `username` del token. Actualmente no se restringe a la identidad autenticada. |
-| `Authorization` (header) | string | Si | Debe usar `Bearer ` seguido del token Base64 legado. |
+| `Authorization` (header) | string | Si | Debe usar `Bearer ` seguido de un JWT firmado válido según la sección Autenticación observada. |
 
 Ejemplo completo:
 
 ```http
 GET /api/summary?owner=student HTTP/1.1
 Host: localhost:8000
-Authorization: Bearer c3R1ZGVudHxTVFVERU5UfDQxMDI0NDQ4MDB8V09SS1NIT1BfU0VDUkVUXzIwMjY=
+Authorization: Bearer <jwt-firmado>
 ```
 
 ### 4. Response exitosa
@@ -269,8 +269,8 @@ Ejemplo observado con las tareas semilla:
 
 - El filtro de owner está parametrizado, pero el cliente puede seleccionar
   cualquier owner (H-API-02 pendiente).
-- La identidad se extrae de un token Base64 sin firma criptográfica
-  (H-API-01 pendiente).
+- La identidad requiere un JWT firmado RS256 con issuer, audience y
+  expiración válidos (H-API-01).
 
 ## `POST /api/requirements`
 
@@ -291,13 +291,13 @@ bytes). La extensión `.txt` se compara sin distinguir mayúsculas/minúsculas.
 | Campo/parametro | Tipo | Obligatorio | Descripcion |
 |---|---|---:|---|
 | `file` (form-data) | archivo binario con nombre | Si | Solo admite nombre sin `/`, `\` ni `:`, sin terminación en espacio/punto, y extensión `.txt`. Tamaño máximo: 4 MiB. |
-| `Authorization` (header) | string | Si | Debe usar `Bearer ` seguido del token Base64 legado. |
+| `Authorization` (header) | string | Si | Debe usar `Bearer ` seguido de un JWT firmado válido según la sección Autenticación observada. |
 
 Ejemplo completo con un archivo local `requirements.txt`:
 
 ```bash
 curl -X POST "http://localhost:8000/api/requirements" ^
-  -H "Authorization: Bearer c3R1ZGVudHxTVFVERU5UfDQxMDI0NDQ4MDB8V09SS1NIT1BfU0VDUkVUXzIwMjY=" ^
+  -H "Authorization: Bearer <jwt-firmado>" ^
   -F "file=@requirements.txt;type=text/plain"
 ```
 
@@ -345,7 +345,8 @@ Ejemplo observado (la ruta real depende del entorno):
 - El nombre se limita mediante comprobaciones de `Path.name` y extensión; no
   se promete una normalización Unicode ni protección contra sobrescritura de
   otro `.txt` con el mismo nombre.
-- La autenticación sigue siendo el token Base64 legado sin firma.
+- La autenticación exige el JWT RS256 descrito arriba; no admite el token
+  Base64 legado (H-API-01).
 
 ## `GET /api/backend-health`
 
@@ -368,7 +369,7 @@ segundos.
 
 | Campo/parametro | Tipo | Obligatorio | Descripcion |
 |---|---|---:|---|
-| `Authorization` (header) | string | Si | Debe usar `Bearer ` seguido del token Base64 legado. |
+| `Authorization` (header) | string | Si | Debe usar `Bearer ` seguido de un JWT firmado válido según la sección Autenticación observada. |
 | `AUTH_HEALTH_URL` (configuración del servidor) | URL string | No | URL consultada por el backend. Default: `http://localhost:8080/q/health`. No es un parámetro enviado por este cliente HTTP. |
 
 Ejemplo completo:
@@ -376,7 +377,7 @@ Ejemplo completo:
 ```http
 GET /api/backend-health HTTP/1.1
 Host: localhost:8000
-Authorization: Bearer c3R1ZGVudHxTVFVERU5UfDQxMDI0NDQ4MDB8V09SS1NIT1BfU0VDUkVUXzIwMjY=
+Authorization: Bearer <jwt-firmado>
 ```
 
 ### 4. Response exitosa
@@ -429,13 +430,13 @@ caso.
 - `AUTH_HEALTH_URL` es configuración del servidor, no entrada de este endpoint.
 - La ruta devuelve `str(exception)` en `body` en caso de fallo; el detalle
   puede revelar información interna (H-API-07 pendiente).
-- La consulta HTTP no verifica una identidad JWT firmada; todas las rutas
-  dependen del token Base64 legado (H-API-01 pendiente).
+- La ruta requiere el JWT RS256 descrito en la sección Autenticación observada
+  (H-API-01).
 
 ## Preguntas abiertas
 
-- ¿Qué contrato JWT confirmado por el emisor sustituirá el token Base64 y cómo
-  se coordinará con el consumidor?
+- ¿Se confirmaron con el emisor y el consumidor los valores `workshop-auth` y
+  `workshop-api` que valida la API?
 - ¿Se eliminará `owner` de entrada o se conservará pero se ignorará? En
   `GET /api/tasks` se ignora provisionalmente; hay que verificar primero la
   identidad con el contrato JWT confirmado. `GET /api/summary` y `POST
