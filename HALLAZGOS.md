@@ -47,3 +47,37 @@ Todas las rutas exigen `Authorization: Bearer <token>` mediante `Depends(legacy_
 | H-API-07 | api | CORS abierto (`*`) con credenciales habilitadas | Vulnerabilidad | Cualquier origen puede invocar la API desde un navegador; con `allow_credentials=True` amplía la superficie de ataque. Hallazgo adicional, no listado en RETO.md. | api/app/main.py:48-54 | media | Pendiente |
 | H-API-08 | api | Rutas, acceso a DB, reglas de negocio y serialización en un solo archivo | Refactor | Una sola función `create_app` mezcla conexión SQLite, esquema/seed, rutas, SQL, reglas del resumen y serialización; es difícil de probar, reutilizar y revisar. | api/app/main.py:29-127 | media | Pendiente |
 | H-API-09 | api | Calidad: `dict[str, Any]`, `except Exception`, condicionales anidados y duplicación | Refactor | Request/response sin Pydantic ni tipos precisos; `except Exception` esconde fallos; el `if` anidado de 3 niveles y el patrón `owner or identity` + SQL con la misma forma se repiten; valores mágicos (URL, timeout, secreto, estados) sueltos. | api/app/main.py:25, api/app/main.py:56, api/app/main.py:68, api/app/main.py:69-70, api/app/main.py:78, api/app/main.py:92-93, api/app/main.py:101-104, api/app/main.py:116, api/app/main.py:118, api/app/main.py:120 | baja | Pendiente |
+
+#### Candidatos nuevos de discovery (requieren revisión humana)
+
+### H-API-10 — Validación de contenido de tareas sin límites ni catálogo
+- Estado: CANDIDATO
+- Evidencia: `TaskCreate` define `title`, `description`, `status` y `priority` como `str` sin restricciones (`api/app/schemas.py:6-11`); `POST /api/tasks` persiste esos valores (`api/app/repository.py:43-46`). La documentación confirma que no se restringen longitudes ni valores (`docs/ENDPOINTS.md:234`).
+- Impacto: si el consumidor espera estados o prioridades conocidos, una tarea con valores arbitrarios o texto excesivamente largo podría quedar guardada y producir datos incompatibles con filtros o vistas. El impacto depende de que exista un catálogo de negocio aprobado.
+- Prioridad propuesta: baja, hasta confirmar las reglas de dominio.
+- Contrato potencialmente afectado: entrada de `POST /api/tasks` y agregados `byStatus`/`highPriorityOpen` de `GET /api/summary`.
+- Cómo validarlo: acordar primero longitudes y valores permitidos; después probar entradas vacías, sobre el límite y valores desconocidos, verificando el código de respuesta y que el resumen conserve el contrato aprobado.
+
+### H-API-11 — El resumen materializa todas las tareas del propietario
+- Estado: CANDIDATO
+- Evidencia: `summary` obtiene `tasks.list_by_owner(...)` antes de resumir (`api/app/main.py:75-77`); `list_by_owner` ejecuta `fetchall()` y convierte todas las filas a modelos (`api/app/repository.py:37-41`).
+- Impacto: una consulta que devuelve pocos contadores consume tiempo y memoria proporcional al total de tareas del propietario; el coste puede crecer con el historial almacenado.
+- Prioridad propuesta: media si se espera crecimiento sostenido; baja para volúmenes pequeños.
+- Contrato potencialmente afectado: latencia y disponibilidad de `GET /api/summary`; la forma de su respuesta no necesita cambiar.
+- Cómo validarlo: medir latencia y memoria de `/api/summary` con conjuntos de datos crecientes y comparar los contadores con un cálculo de referencia, incluyendo estados cerrados y prioridades distintas.
+
+### H-API-12 — Un fallo de escritura puede dejar una carga parcial en disco
+- Estado: CANDIDATO
+- Evidencia: `save_limited` elimina el destino solo al capturar `HTTPException` (`api/app/uploads.py:37-48`); errores de lectura/escritura distintos, como `OSError` en `destination.write`, salen sin limpieza (`api/app/uploads.py:40-45`). La prueba actual comprueba un 500 al fallar la función, pero no verifica el estado del archivo (`api/tests/test_endpoint_contracts.py:186-200`).
+- Impacto: un archivo incompleto puede permanecer en el directorio de cargas después de que `POST /api/requirements` falle, y confundirse con una carga válida o impedir una recuperación fiable.
+- Prioridad propuesta: media.
+- Contrato potencialmente afectado: semántica de éxito/error de `POST /api/requirements` y consistencia del almacenamiento local.
+- Cómo validarlo: provocar un error de lectura o escritura después de guardar al menos un fragmento; comprobar que la respuesta sigue siendo de error y que no queda un archivo parcial.
+
+### H-API-13 — Conexión SQLite compartida sin serialización explícita
+- Estado: CANDIDATO
+- Evidencia: `create_app` crea una conexión con `check_same_thread=False` y la entrega al repositorio compartido (`api/app/main.py:50-52`); los endpoints síncronos de lectura y escritura la usan directamente (`api/app/main.py:67-77`), sin bloqueo visible en `TaskRepository` (`api/app/repository.py:25-51`).
+- Impacto: solicitudes concurrentes pueden usar la misma conexión desde distintos hilos sin coordinación explícita; podría producir errores intermitentes o interacción inesperada entre operaciones/commits.
+- Prioridad propuesta: media, sujeta a reproducir el comportamiento con la configuración de SQLite usada en despliegue.
+- Contrato potencialmente afectado: fiabilidad y consistencia de `GET /api/tasks`, `POST /api/tasks` y `GET /api/summary` bajo concurrencia.
+- Cómo validarlo: ejecutar solicitudes concurrentes de lectura y creación sobre una misma instancia de app y una base temporal; registrar errores, comprobar todas las inserciones y verificar que cada respuesta corresponde a la operación solicitada.
