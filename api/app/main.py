@@ -4,12 +4,19 @@ import base64
 import os
 import sqlite3
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import urllib3
-from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+
+from app.config import CLOSED_TASK_STATUSES, HIGH_PRIORITY
+from app.repository import TaskRepository
+from app.schemas import TaskCreate, TaskResponse, TaskSummary, UploadResponse
+from app.security import resolve_owner
+from app.uploads import resolve_target, sanitize_filename, save_limited, validate_extension
 
 LEGACY_SECRET = "WORKSHOP_SECRET_2026"
 
@@ -26,6 +33,14 @@ def legacy_identity(authorization: str = Header(default="")) -> dict[str, str]:
         raise HTTPException(status_code=401, detail="Invalid token: " + str(error)) from error
 
 
+def summarize_tasks(owner: str, tasks: list[TaskResponse]) -> TaskSummary:
+    by_status = Counter(task.status for task in tasks)
+    high_priority_open = sum(
+        1 for task in tasks if task.priority == HIGH_PRIORITY and task.status not in CLOSED_TASK_STATUSES
+    )
+    return TaskSummary(owner=owner, total=len(tasks), byStatus=dict(by_status), highPriorityOpen=high_priority_open)
+
+
 def create_app(db_path: str | None = None, upload_dir: str | None = None) -> FastAPI:
     selected_db = db_path or os.getenv("WORKSHOP_DB_PATH", "./data/workshop.db")
     selected_uploads = upload_dir or os.getenv("WORKSHOP_UPLOAD_DIR", "./uploads")
@@ -34,13 +49,8 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
 
     connection = sqlite3.connect(selected_db, check_same_thread=False)
     connection.row_factory = sqlite3.Row
-    connection.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT NOT NULL, status TEXT NOT NULL, owner TEXT NOT NULL, priority TEXT NOT NULL, created_at TEXT NOT NULL)")
-    count = connection.execute("SELECT COUNT(*) AS total FROM tasks").fetchone()["total"]
-    if count == 0:
-        connection.execute("INSERT INTO tasks(title,description,status,owner,priority,created_at) VALUES ('Refactor login','Separar responsabilidades en frontend','TODO','student','HIGH',datetime('now'))")
-        connection.execute("INSERT INTO tasks(title,description,status,owner,priority,created_at) VALUES ('Review API','Revisar seguridad de endpoints','IN_PROGRESS','student','MEDIUM',datetime('now'))")
-        connection.execute("INSERT INTO tasks(title,description,status,owner,priority,created_at) VALUES ('Trainer notes','Preparar retrospectiva','TODO','trainer','LOW',datetime('now'))")
-        connection.commit()
+    tasks = TaskRepository(connection)
+    tasks.ensure_schema_with_seed()
 
     app = FastAPI(title="Workshop Requirements API", version="0.1.0")
     app.state.connection = connection
@@ -53,63 +63,26 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
         allow_headers=["*"],
     )
 
-    def as_task(row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "id": row["id"],
-            "title": row["title"],
-            "description": row["description"],
-            "status": row["status"],
-            "owner": row["owner"],
-            "priority": row["priority"],
-            "createdAt": row["created_at"],
-        }
+    @app.get("/api/tasks", response_model=list[TaskResponse], response_model_by_alias=True)
+    def list_tasks(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(legacy_identity)) -> list[TaskResponse]:
+        return tasks.list_by_owner(resolve_owner(identity, owner))
 
-    @app.get("/api/tasks")
-    def list_tasks(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(legacy_identity)) -> list[dict[str, Any]]:
-        requested_owner = owner or identity["username"]
-        sql = "SELECT id,title,description,status,owner,priority,created_at FROM tasks WHERE owner='" + requested_owner + "' ORDER BY id"
-        rows = connection.execute(sql).fetchall()
-        result: list[dict[str, Any]] = []
-        for row in rows:
-            result.append(as_task(row))
-        return result
+    @app.post("/api/tasks", status_code=201, response_model=TaskResponse, response_model_by_alias=True)
+    def create_task(payload: TaskCreate, identity: dict[str, str] = Depends(legacy_identity)) -> TaskResponse:
+        return tasks.create(payload, resolve_owner(identity, payload.owner))
 
-    @app.post("/api/tasks", status_code=201)
-    def create_task(payload: dict[str, Any] = Body(...), identity: dict[str, str] = Depends(legacy_identity)) -> dict[str, Any]:
-        title = str(payload.get("title", ""))
-        description = str(payload.get("description", ""))
-        status = str(payload.get("status", "TODO"))
-        priority = str(payload.get("priority", "MEDIUM"))
-        owner = str(payload.get("owner", identity["username"]))
-        sql = "INSERT INTO tasks(title,description,status,owner,priority,created_at) VALUES ('" + title + "','" + description + "','" + status + "','" + owner + "','" + priority + "',datetime('now'))"
-        cursor = connection.execute(sql)
-        connection.commit()
-        row = connection.execute("SELECT id,title,description,status,owner,priority,created_at FROM tasks WHERE id=" + str(cursor.lastrowid)).fetchone()
-        return as_task(row)
+    @app.get("/api/summary", response_model=TaskSummary)
+    def summary(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(legacy_identity)) -> TaskSummary:
+        resolved_owner = resolve_owner(identity, owner)
+        return summarize_tasks(resolved_owner, tasks.list_by_owner(resolved_owner))
 
-    @app.get("/api/summary")
-    def summary(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(legacy_identity)) -> dict[str, Any]:
-        requested_owner = owner or identity["username"]
-        rows = connection.execute("SELECT status,priority FROM tasks WHERE owner='" + requested_owner + "'").fetchall()
-        response: dict[str, Any] = {"owner": requested_owner, "total": 0, "byStatus": {}, "highPriorityOpen": 0}
-        for row in rows:
-            response["total"] = response["total"] + 1
-            if row["status"] in response["byStatus"]:
-                response["byStatus"][row["status"]] = response["byStatus"][row["status"]] + 1
-            else:
-                response["byStatus"][row["status"]] = 1
-            if row["priority"] == "HIGH":
-                if row["status"] != "DONE":
-                    if row["status"] != "ARCHIVED":
-                        response["highPriorityOpen"] = response["highPriorityOpen"] + 1
-        return response
-
-    @app.post("/api/requirements", status_code=201)
-    async def upload_requirement(file: UploadFile = File(...), identity: dict[str, str] = Depends(legacy_identity)) -> dict[str, Any]:
-        target = Path(selected_uploads) / str(file.filename)
-        content = await file.read()
-        target.write_bytes(content)
-        return {"owner": identity["username"], "fileName": file.filename, "storedAt": str(target), "size": len(content)}
+    @app.post("/api/requirements", status_code=201, response_model=UploadResponse)
+    async def upload_requirement(file: UploadFile = File(...), identity: dict[str, str] = Depends(legacy_identity)) -> UploadResponse:
+        file_name = sanitize_filename(file.filename)
+        validate_extension(file_name)
+        target = resolve_target(Path(selected_uploads), file_name)
+        size = await save_limited(file, target)
+        return UploadResponse(owner=identity["username"], fileName=file_name, storedAt=str(target), size=size)
 
     @app.get("/api/backend-health")
     def backend_health(identity: dict[str, str] = Depends(legacy_identity)) -> dict[str, Any]:
