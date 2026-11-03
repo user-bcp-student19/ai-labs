@@ -2,7 +2,7 @@
 
 ## API (`api/`)
 
-Pruebas basadas en el contrato observado en [ENDPOINTS.md](./ENDPOINTS.md). La cobertura de casos de error genéricos 500 usa fallos simulados de SQLite/filesystem; no altera el código del producto. Los tests existentes ejercitan aspectos de H-API-01 (rechazo de token inválido; no demuestra JWT seguro), H-API-02 (consultas y contrato), H-API-03 (aislamiento de owner), H-API-04 (validación de archivo, con riesgos pendientes), H-API-05 (smoke de rutas que usan las dependencias, no auditoría de advisories), H-API-06 (respuesta de errores observada, no remediación) y H-API-09 (validación tipada). La asociación con un ID no significa que el hallazgo esté resuelto.
+Pruebas basadas en el contrato observado en [ENDPOINTS.md](./ENDPOINTS.md). La cobertura de casos de error genéricos 500 usa fallos simulados de SQLite/filesystem; no altera el código del producto. Las pruebas de H-API-01 validan firma HS256, claims requeridos, emisor, audiencia, expiración y rechazo del formato legado; las de H-API-02 cubren consultas y contrato, H-API-03 aislamiento de owner, H-API-04 validación de archivo (con riesgos pendientes), H-API-05 smoke de rutas que usan dependencias, H-API-06 respuestas de error observadas y H-API-09 validación tipada.
 
 ### Matriz endpoint | caso | tipo | resultado esperado
 
@@ -11,6 +11,8 @@ Pruebas basadas en el contrato observado en [ENDPOINTS.md](./ENDPOINTS.md). La c
 | `GET /api/tasks` | Listar tareas sembradas del usuario | Feliz | 200; arreglo con campos del contrato y solo tareas de la identidad |
 | `GET /api/tasks` | Omitir `owner` o enviarlo vacío | Borde | 200; usar la identidad del token |
 | `GET /api/tasks` | Sin autorización | Error (401) | 401 con cuerpo `detail` |
+| `GET /api/tasks` | Firma, expiración, issuer, audience o claims inválidos | Error (401) | 401 genérico y desafío `WWW-Authenticate: Bearer` |
+| `GET /api/tasks` | Token Base64 legado | Error (401) | 401; no se acepta el formato anterior |
 | `GET /api/tasks` | `owner` de otra identidad | Error (403) | 403, `{"detail":"Forbidden"}` |
 | `GET /api/tasks` | Método no admitido en la ruta compartida `/api/tasks` | Error (405) | 405, `{"detail":"Method Not Allowed"}`; la ruta admite tanto GET como POST |
 | `GET /api/tasks` | Fallo simulado de SQLite | Error (500) | 500, cuerpo `text/plain` `Internal Server Error` |
@@ -298,19 +300,23 @@ Python **3.13.15**, entorno `api/.venv`, Windows.
 
 | comando | directorio de trabajo | código de salida | resultado |
 |---|---|---:|---|
-| `.\.venv\Scripts\python.exe -m pytest --cov=app --cov-report=term-missing --cov-report=html --cov-fail-under=85` | `api/` | 0 | 65 pasaron, 131 warnings; gate de 85 % satisfecho; HTML en `api/htmlcov/`. |
+| `.\.venv\Scripts\python.exe -m pytest --cov=app --cov-report=term-missing --cov-report=html --cov-fail-under=85` | `api/` | 0 | Baseline previo a H-API-01: 65 pasaron, 131 warnings; cobertura 100 %; gate de 85 % satisfecho. |
+| `python tools/lab.py test api` | raíz del repositorio | 0 | Post H-API-01: 85 pasaron, 167 warnings; cobertura total 100 %; gate de 85 % satisfecho. |
+| `api\.venv\Scripts\pip-audit.exe -r api\requirements.txt` | raíz del repositorio | 1 | No reportó advisories para PyJWT; reportó 10 advisories existentes de `starlette==0.50.0`. No se silenciaron ni se modificó esa dependencia fuera del alcance aprobado. |
+| `docker compose config --quiet` | raíz del repositorio | 1 | No se pudo validar: Docker CLI no está instalado (`docker` no se reconoce). |
+| `api\.venv\Scripts\python.exe -c "import yaml; yaml.safe_load(open('compose.yaml', encoding='utf-8'))"` | raíz del repositorio | 0 | La sintaxis YAML de Compose se pudo parsear correctamente. |
 
-**Cobertura global de la aplicación** (medida con `pytest-cov`/Coverage.py, configuración `api/pyproject.toml`, `source=["app"]`, branch coverage activada): **178/178 statements y 16/16 branches = 100 %** en este run. Informe HTML: `api/htmlcov/index.html`. El umbral del comando sigue en 85 %; no fue reducido.
+**Cobertura global de la aplicación** (medida con `pytest-cov`/Coverage.py, configuración `api/pyproject.toml`, `source=["app"]`, branch coverage activada): baseline **178/178 statements y 16/16 branches = 100 %**; post H-API-01 **211/211 statements y 18/18 branches = 100 %**. El umbral sigue en 85 %; no fue reducido.
 
-**Cobertura del diff**: no se modificó código de producción. Las pruebas nuevas están fuera del `source=["app"]`, por lo que la cobertura específica del código de pruebas no aplica; la cifra anterior es global para la aplicación.
+**Cobertura del diff**: el código de producción modificado quedó cubierto al 100 %. Las pruebas nuevas están fuera del `source=["app"]`.
 
 ### Fallos, pendientes y pruebas propuestas
 
 - **Fallo de prueba durante el desarrollo (corregido)**: la primera ejecución de `test_endpoint_contracts.py` esperaba 405 para `GET /api/tasks`, que es una operación válida. El código de salida fue 1. El resumen de esa ejecución no conservó la línea exacta del comando. Se corrigió el caso para usar `DELETE`; además, docs/ENDPOINTS.md ahora especifica que `/api/tasks` admite ambos métodos. La suite final documentada pasó después.
-- **Pendiente H-API-01**: las pruebas ejercitan el formato de token heredado, no demuestran firma JWT, emisor ni audiencia; el token actual es falsificable. No se afirma que la autenticación sea segura.
+- **H-API-01 implementado localmente**: las pruebas ahora comprueban firma, claims, emisor, audiencia, expiración, algoritmo `none`, formato legado y configuración obligatoria. La integración con el emisor auth y la revisión humana siguen pendientes.
 - **Pendiente H-API-04**: las pruebas no fijan como comportamiento deseado la sobrescritura, el límite de request antes de que Starlette parse el multipart, ni nombres excesivamente largos. La documentación registra esos riesgos; H-API-04 continúa Pendiente.
-- **Pendiente H-API-06**: no se asertan como comportamiento aceptable los detalles verbosos de token/upstream; la implementación actual los devuelve. Requiere remediación aprobada.
-- **Pruebas propuestas cuando se acuerde el contrato/remediación**: JWT firmado real (H-API-01); aislamiento de nombres entre owners y rechazo temprano de cargas grandes (H-API-04); mensajes genéricos en 401 y backend-health (H-API-06). No se implementaron ni se reportan como ejecutadas.
+- **Pendiente H-API-06**: la respuesta de `backend-health` todavía expone `str(error)` y el cuerpo upstream. El detalle del 401 de autenticación es genérico como parte de H-API-01.
+- **Pruebas propuestas pendientes**: aislamiento de nombres entre owners y rechazo temprano de cargas grandes (H-API-04); mensajes genéricos en `backend-health` (H-API-06). No se implementaron ni se reportan como ejecutadas.
 - Se generaron warnings de deprecación de `FastAPI.on_event`; no causaron fallos y no se cambió el umbral ni se silenció ningún warning.
 
 ### Fuentes consultadas

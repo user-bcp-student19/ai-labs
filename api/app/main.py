@@ -1,37 +1,20 @@
 from __future__ import annotations
 
-import base64
 import os
 import sqlite3
-import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import urllib3
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Header, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import CLOSED_TASK_STATUSES, HIGH_PRIORITY
+from app.config import AuthSettings, CLOSED_TASK_STATUSES, HIGH_PRIORITY
 from app.repository import TaskRepository
 from app.schemas import TaskCreate, TaskResponse, TaskSummary, UploadResponse
-from app.security import resolve_owner
+from app.security import authenticate_bearer, resolve_owner
 from app.uploads import resolve_target, sanitize_filename, save_limited, validate_extension
-
-LEGACY_SECRET = "WORKSHOP_SECRET_2026"
-
-
-def legacy_identity(authorization: str = Header(default="")) -> dict[str, str]:
-    try:
-        token = authorization.replace("Bearer ", "")
-        decoded = base64.b64decode(token).decode("utf-8")
-        parts = decoded.split("|")
-        if len(parts) != 4 or parts[3] != LEGACY_SECRET or int(parts[2]) < int(time.time()):
-            raise ValueError("invalid token")
-        return {"username": parts[0], "role": parts[1]}
-    except Exception as error:
-        raise HTTPException(status_code=401, detail="Invalid token: " + str(error)) from error
-
 
 def summarize_tasks(owner: str, tasks: list[TaskResponse]) -> TaskSummary:
     by_status = Counter(task.status for task in tasks)
@@ -42,6 +25,7 @@ def summarize_tasks(owner: str, tasks: list[TaskResponse]) -> TaskSummary:
 
 
 def create_app(db_path: str | None = None, upload_dir: str | None = None) -> FastAPI:
+    auth_settings = AuthSettings.from_environment()
     selected_db = db_path or os.getenv("WORKSHOP_DB_PATH", "./data/workshop.db")
     selected_uploads = upload_dir or os.getenv("WORKSHOP_UPLOAD_DIR", "./uploads")
     Path(selected_db).parent.mkdir(parents=True, exist_ok=True)
@@ -63,21 +47,24 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
         allow_headers=["*"],
     )
 
+    def current_identity(authorization: str = Header(default="")) -> dict[str, str]:
+        return authenticate_bearer(authorization, auth_settings).model_dump()
+
     @app.get("/api/tasks", response_model=list[TaskResponse], response_model_by_alias=True)
-    def list_tasks(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(legacy_identity)) -> list[TaskResponse]:
+    def list_tasks(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(current_identity)) -> list[TaskResponse]:
         return tasks.list_by_owner(resolve_owner(identity, owner))
 
     @app.post("/api/tasks", status_code=201, response_model=TaskResponse, response_model_by_alias=True)
-    def create_task(payload: TaskCreate, identity: dict[str, str] = Depends(legacy_identity)) -> TaskResponse:
+    def create_task(payload: TaskCreate, identity: dict[str, str] = Depends(current_identity)) -> TaskResponse:
         return tasks.create(payload, resolve_owner(identity, payload.owner))
 
     @app.get("/api/summary", response_model=TaskSummary)
-    def summary(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(legacy_identity)) -> TaskSummary:
+    def summary(owner: str | None = Query(default=None), identity: dict[str, str] = Depends(current_identity)) -> TaskSummary:
         resolved_owner = resolve_owner(identity, owner)
         return summarize_tasks(resolved_owner, tasks.list_by_owner(resolved_owner))
 
     @app.post("/api/requirements", status_code=201, response_model=UploadResponse)
-    async def upload_requirement(file: UploadFile = File(...), identity: dict[str, str] = Depends(legacy_identity)) -> UploadResponse:
+    async def upload_requirement(file: UploadFile = File(...), identity: dict[str, str] = Depends(current_identity)) -> UploadResponse:
         file_name = sanitize_filename(file.filename)
         validate_extension(file_name)
         target = resolve_target(Path(selected_uploads), file_name)
@@ -85,7 +72,7 @@ def create_app(db_path: str | None = None, upload_dir: str | None = None) -> Fas
         return UploadResponse(owner=identity["username"], fileName=file_name, storedAt=str(target), size=size)
 
     @app.get("/api/backend-health")
-    def backend_health(identity: dict[str, str] = Depends(legacy_identity)) -> dict[str, Any]:
+    def backend_health(identity: dict[str, str] = Depends(current_identity)) -> dict[str, Any]:
         url = os.getenv("AUTH_HEALTH_URL", "http://localhost:8080/q/health")
         try:
             response = urllib3.PoolManager().request("GET", url, timeout=3.0)

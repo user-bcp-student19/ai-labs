@@ -13,13 +13,13 @@ Plan compartido. Cada componente mantiene su propia sección (`auth`, `api`, `we
 
 - **Hallazgos planificados** (estado `Aprobado` en HALLAZGOS.md; aprobación humana registrada arriba): H-API-01, H-API-02, H-API-03, H-API-04 y H-API-05.
 - **Fuera de este plan** (siguen `Pendiente`, sin aprobar): H-API-06 (errores que exponen detalles; solo se toca lo inevitable en H-API-01, ver ese apartado), H-API-07 (CORS), H-API-08 (arquitectura) y H-API-09 (calidad).
-- **Estado del plan**: aprobación humana registrada arriba (Marco Soto, 02/11/2026; H-API-01 a H-API-05). Implementados H-API-05, H-API-02, H-API-03 y H-API-04 (ver «Registro de ejecuciones»). **H-API-01 permanece bloqueado** (sin acuerdo de contrato de token con auth), tal como establece su apartado.
-- **Contrato**: `docs/ENDPOINTS.md` no existe; se preserva el comportamiento observado: rutas y métodos, códigos 200/201/401 y claves JSON `id,title,description,status,owner,priority,createdAt`, `owner,total,byStatus,highPriorityOpen`, `owner,fileName,storedAt,size`, `requestedBy,status,body`. Cada cambio visible aparece como **decisión pendiente** en su apartado.
+- **Estado del plan**: aprobación humana registrada arriba (Marco Soto, 02/11/2026; H-API-01 a H-API-05). Implementados H-API-05, H-API-02, H-API-03 y H-API-04 (ver «Registro de ejecuciones»). H-API-01 fue desbloqueado el 03/11/2026 tras la aprobación explícita del contrato propuesto y la coordinación con auth; su implementación local queda pendiente de revisión humana.
+- **Contrato**: `docs/ENDPOINTS.md` documenta los contratos HTTP observados. Se preservan rutas, métodos y claves JSON `id,title,description,status,owner,priority,createdAt`, `owner,total,byStatus,highPriorityOpen`, `owner,fileName,storedAt,size`, `requestedBy,status,body`; H-API-01 reemplaza únicamente el contrato de autenticación conforme al apartado aprobado.
 - **Firma pública que no cambia**: `create_app(db_path, upload_dir)` y el objeto `app` en `api/app/main.py` (los usan `api/tests/test_api.py` y el `Dockerfile`: `app.main:app`). Cualquier parámetro nuevo será opcional.
 - **Método por hallazgo**: (1) prueba de caracterización que pasa con el código actual y fija el contrato; (2) prueba de comportamiento deseado que falla antes del cambio (rojo) y pasa después (verde); (3) cambio mínimo; (4) regresión con `python tools/lab.py test api` (o `pytest` con cwd `api/`). Meta: 85 % del código modificado; el resultado real se registrará en `docs/TESTING.md`, no aquí.
 - **Clean Code (AGENTS.md 8-12)**: una responsabilidad por función; sin duplicación (la resolución de `owner` y la conversión fila→tarea se escriben una vez); guard clauses en lugar de `if` anidados; constantes con nombre en `api/app/config.py` (`JWT_ALGORITHM`, `MAX_UPLOAD_BYTES`, `UPLOAD_CHUNK_BYTES`, `ALLOWED_UPLOAD_EXTENSIONS`, nombres de columnas/tabla, etc.); nombres que expliquen propósito.
 - **Archivos nuevos acotados** (solo lo que exigen los hallazgos; la separación completa en capas es H-API-08): `api/app/config.py`, `api/app/security.py`, `api/app/schemas.py`, `api/app/repository.py`, `api/app/uploads.py`.
-- **Orden propuesto**: H-API-05 → H-API-02 → H-API-03 → H-API-04 → H-API-01. H-API-01 va al final porque cambia el contrato de token con auth (fuera de AMBITO) y necesita acuerdo previo; los demás no dependen de él. Mientras tanto la dependencia de identidad conserva su forma `{"username","role"}`, así H-API-03 usa una sola función (`resolve_owner`) que H-API-01 no tendrá que reescribir.
+- **Orden propuesto**: H-API-05 → H-API-02 → H-API-03 → H-API-04 → H-API-01. H-API-01 quedó al final por requerir acuerdo de token con auth; el acuerdo fue confirmado antes de implementar. La dependencia conserva la forma `{"username","role"}`, así H-API-03 mantiene su uso de `resolve_owner`.
 
 ---
 
@@ -33,14 +33,14 @@ Plan compartido. Cada componente mantiene su propia sección (`auth`, `api`, `we
 - `api/app/security.py`: `decode_access_token(token, settings) -> Identity` que verifica **firma, `iss`, `aud` y `exp`** (`require=["exp","iss","aud","sub"]`) con algoritmo fijo (`JWT_ALGORITHM = "HS256"`, nunca tomado del encabezado del token). `Identity` es un modelo Pydantic (`username` desde `sub`, `role`).
 - `api/app/config.py`: `Settings` (Pydantic) leído de `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`. **Sin valor por defecto para el secreto**: si falta, la app falla al arrancar con mensaje claro. Se elimina `LEGACY_SECRET`.
 - `legacy_identity` pasa a `current_identity` con guard clauses: sin cabecera `Bearer` → 401; token inválido o expirado → 401 con `detail` genérico (`"Invalid or expired token"`) y `WWW-Authenticate: Bearer`. El motivo detallado va solo al log del servidor (nunca el token). Esto elimina el `str(error)` de `api/app/main.py:26` por necesidad del reemplazo; **el resto de H-API-06 (`backend_health`) no se toca**.
-- **Dependencia nueva (justificada)**: `PyJWT`, pinneada a una versión validada con `pip-audit` (la última en el índice al planificar es 2.15.1; confirmar). Se prefiere sobre implementar HS256 a mano con `hmac` para no reescribir parseo y validación de claims de seguridad. Alternativa sin dependencia nueva: `hmac`+`base64` propios; **decisión humana pendiente**.
-- **Coordinación con otro componente (sin ampliar AMBITO)**: hoy `auth` emite el token Base64. Hay que acordar con auth/web algoritmo, nombres de claims (`sub`, rol), `iss`, `aud`, expiración y gestión del secreto compartido. No se leyó el código de auth; **el acuerdo está pendiente y no se asume**. Hasta entonces H-API-01 queda bloqueado para implementar.
-- `JWT_*` deben llegar al contenedor: `compose.yaml` (raíz, no editable en este paso) requerirá esas variables; pendiente de coordinación. Para pruebas, `api/tests/conftest.py` define valores de prueba aislados (no reales) antes de importar `app.main`, porque `app = create_app()` se evalúa al importar.
+- **Dependencia nueva (justificada)**: `PyJWT==2.15.1`, aprobada para validar firma y claims sin implementar criptografía propia. `pip-audit` no reportó advisories para PyJWT; sí reportó 10 advisories preexistentes en `starlette==0.50.0`, fuera del alcance.
+- **Coordinación con otro componente**: el usuario confirmó que auth está coordinado fuera de este cambio y aprobó el contrato propuesto: HS256; claims `sub`, `role`, `exp`, `iss`, `aud`; configuración `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`. No se inspeccionó ni modificó código de auth/web.
+- `compose.yaml` ahora requiere las tres variables de entorno para el servicio API, sin defaults ni secretos versionados. Para pruebas, `api/tests/conftest.py` fija valores aislados antes de importar `app.main`, porque `app = create_app()` se evalúa al importar.
 
-**Archivos a tocar**: `api/app/main.py`, `api/app/security.py` (nuevo), `api/app/config.py` (nuevo), `api/requirements.txt`, `api/tests/conftest.py` (nuevo), `api/tests/test_api.py` (helper `token()`).
+**Archivos tocados**: `api/app/main.py`, `api/app/security.py`, `api/app/config.py`, `api/requirements.txt`, `api/tests/conftest.py`, `api/tests/helpers.py`, `api/tests/test_api.py`, `api/tests/test_authentication.py`, `compose.yaml`, `README.md`, `docs/ENDPOINTS.md`, `docs/TESTING.md`, `HALLAZGOS.md` y este plan.
 
-**Prueba de caracterización antes de tocar** (`api/tests/test_auth_characterization.py`, verde con el código actual): sin `Authorization` → 401; cadena arbitraria → 401; token válido de `student` → 200 en `GET /api/tasks`; token expirado → 401; el rol no cambia el resultado de `GET /api/tasks` (hoy no se usa).
-**Comportamiento deseado (rojo→verde)**: firma incorrecta → 401; `iss` o `aud` distintos → 401; `exp` ausente o vencido → 401; `alg: none` → 401; el cuerpo del 401 no contiene el texto de la excepción; la app no arranca sin `JWT_SECRET`. Los tests existentes que fabrican Base64 se sustituyen por un helper que emite JWT de prueba (cambio de fixture, no de contrato HTTP).
+**Caracterización antes del cambio**: `python tools/lab.py test api` pasó antes de tocar el código (65 pruebas, 100 % de cobertura global); caracterizaba rutas válidas, falta de autorización, token inválido y aislamiento de owner.
+**Comportamiento deseado verificado**: firma incorrecta, issuer/audience incorrectos, claims requeridos ausentes, expiración, `alg: none` y formato Base64 legado → 401 genérico; la app no arranca sin variables de autenticación; identidad válida conserva las rutas y autorización por owner. Los helpers generan JWT de prueba con clave aislada.
 
 ---
 
@@ -118,12 +118,12 @@ Plan compartido. Cada componente mantiene su propia sección (`auth`, `api`, `we
 
 ### Riesgos y pendientes del plan api
 
-1. Revisión del plan: aprobación registrada al inicio de la sección. Las decisiones de contrato (abajo, punto 4) se implementaron con los valores por defecto propuestos; la aprobación no las enumera una por una, por lo que su confirmación explícita sigue **Pendiente**.
-2. Acuerdo de contrato de token con auth/web (algoritmo, claims, `iss`, `aud`, secreto): **Pendiente** (bloquea H-API-01).
-3. Variables `JWT_*` en `compose.yaml` y despliegue: **Pendiente** (fuera de AMBITO).
-4. Decisiones de contrato: 403 vs ignorar `owner` ajeno; roles con acceso a otros `owner`; Enum de `status`/`priority`; extensiones y tamaño máximo; `storedAt` con ruta; PyJWT vs implementación propia.
+1. Revisión del plan: aprobación registrada al inicio de la sección; el usuario aprobó explícitamente la propuesta H-API-01 y confirmó coordinación con auth el 03/11/2026.
+2. Contrato de token: acordado para esta integración como HS256 con `sub`, `role`, `exp`, `iss` y `aud`, usando `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE`.
+3. Variables de despliegue: incluidas como referencias obligatorias en `compose.yaml`; la sintaxis YAML pasó, pero no se pudo ejecutar `docker compose config` porque Docker CLI no está instalado.
+4. Decisiones de otros hallazgos que siguen pendientes: roles con acceso a otros `owner`; Enum de `status`/`priority`; extensiones y tamaño máximo; `storedAt` con ruta.
 5. `pip-audit` posterior: quedan 10 avisos de `starlette 0.50.0` (dependencia transitiva de `fastapi==0.128.2`, correcciones desde 1.0.1 hasta 1.3.1); no está en H-API-05 y no se tocó. Requiere evaluar una actualización de `fastapi`/`starlette`: **Pendiente** (hallazgo nuevo por registrar si se aprueba). Cobertura del diff por método de línea/rama de `coverage`: ver «Registro de ejecuciones»; el informe formal va a `docs/TESTING.md`.
-6. H-API-06 sin aprobar: tras H-API-01 sigue pendiente el `str(error)` de `backend_health` (`api/app/main.py:93-94` tras los cambios) y el `str(error)` del 401 (`api/app/main.py:33`).
+6. H-API-06 sin aprobar: tras H-API-01 sigue pendiente el `str(error)` y el cuerpo remoto que devuelve `backend_health` (`api/app/main.py:80-81`); el 401 de autenticación ya es genérico por el cambio acotado de H-API-01.
 
 ---
 
@@ -139,18 +139,25 @@ Comando de regresión: `python tools/lab.py test api` (equivale a `pytest --cov=
 | 4 | H-API-03 | `pytest api/tests/test_authorization.py` | 2 caracterización pasan; 4 de corrección fallan (`owner` ajeno → 403 en lecturas y creación, detalle genérico) | 6 pasan; suite completa 21 pasan |
 | 5 | H-API-04 | `pytest api/tests/test_uploads.py` | 7 pasan; 13 de corrección fallan (traversal, caracteres, nombres vacíos, extensiones, tamaño). La ejecución roja escribió `C:\tmp\evil.txt` fuera de `tmp_path` (demostración del hallazgo); se eliminó | 21 pasan; suite completa 42 pasan |
 | 6 | H-API-02, 03, 04, 05 | `python tools/lab.py test api` final | — | 42 pasan; cobertura total 97,94 % (`main.py` 95 %; `config`, `repository`, `schemas`, `security` y `uploads` 100 %); gate 85 % cumplido |
+| 7 | H-API-01 | `python tools/lab.py test api` | 65 pasan; cobertura total 100 % | 85 pasan; cobertura total 100 %; gate 85 % cumplido |
+| 8 | H-API-01 | `api\.venv\Scripts\pip-audit.exe -r api\requirements.txt` | — | Código 1: 10 advisories de `starlette==0.50.0`; ningún advisory reportado para `PyJWT==2.15.1` |
+| 9 | H-API-01 | `api\.venv\Scripts\python.exe -c "import yaml; yaml.safe_load(open('compose.yaml', encoding='utf-8'))"` | — | YAML válido; validación Compose no disponible porque Docker CLI no está instalado |
 
-Líneas de `api/app/main.py` sin cubrir: 30 (`raise ValueError` de `legacy_identity` para secreto incorrecto o token expirado, sin modificar; pertenece a H-API-01) y 93-94 (`except` de `backend_health`, sin modificar; pertenece a H-API-06).
+La última ejecución cubrió 211/211 statements y 18/18 branches del código `app`. No se redujo el gate. Se conservaron warnings existentes de deprecación de FastAPI/Starlette.
 
 ### Desviaciones del plan
 
-- **H-API-01 no se implementó**: el apartado lo declara bloqueado hasta acordar el contrato de token con auth; se consultó y no hubo decisión que lo desbloquee. Sigue `Aprobado` en HALLAZGOS.md. Implementarlo rechazaría los tokens Base64 que hoy emite auth.
+- **H-API-01**: implementado localmente después de recibir aprobación explícita del contrato y confirmación de coordinación con auth. No se modificó código de auth/web. El formato Base64 legado se rechaza; la revisión humana de los cambios sigue pendiente.
 - **H-API-05**: se fijaron `urllib3==2.8.0` y `python-multipart==0.0.33` (el plan indicaba mínimos 2.6.3 y 0.0.27); `pip-audit` mostró correcciones de `python-multipart` hasta 0.0.31, por lo que 0.0.27 no bastaba.
 - **H-API-02**: no se creó `status_priority_by_owner`; el resumen usa `list_by_owner` y `summarize_tasks` (función a nivel de módulo en `api/app/main.py`) para evitar una consulta duplicada. Se tipó también la respuesta de `/api/summary` (`TaskSummary`).
 - **H-API-04**: se añadió el modelo `UploadResponse` (api/app/schemas.py) para no dejar `dict[str, Any]` en la ruta; el contrato JSON no cambia. Limitación residual: Starlette recibe y almacena temporalmente el cuerpo multipart completo antes de que el tope de `MAX_UPLOAD_BYTES` se aplique en el handler.
-- Se añadieron `api/tests/helpers.py` y `api/tests/__init__.py` (utilidades de pruebas; `helpers.py` concentrará el cambio de token en H-API-01).
-- `api/tests/test_api.py` no se modificó; sus pruebas siguen pasando.
+- `api/tests/helpers.py` centraliza tokens JWT de prueba; `api/tests/conftest.py` configura valores aislados antes de importar `app.main`.
+- `api/tests/test_api.py` migró de tokens Base64 a JWT de prueba; `api/tests/test_authentication.py` cubre la validación y el rechazo de tokens inválidos.
 
 ### Revisión local del diff (IA, 02/11/2026; no es aprobación humana)
 
 Evidencia: `git diff main -- api/` más archivos nuevos de `git status --short`. Las ramas locales muestran solo `main` (no existe `day1/prompting`) y los cambios están sin commit, por lo que el diff equivale al árbol de trabajo. Resultado: H-API-02 y H-API-05 verificados como `Resuelto`; H-API-03 `Resuelto` con la salvedad de depender de H-API-01 (identidad fabricable); **H-API-04 devuelto a `Pendiente`** por residuales detallados en su fila de HALLAZGOS.md. Aprobación humana de la revisión: **Pendiente**.
+
+### Implementación local H-API-01 (03/11/2026)
+
+La rama actual es `day1/prompting`. `python tools/lab.py test api` pasó con 85 pruebas y cobertura global del 100 %. `pip-audit` informó 10 advisories existentes de Starlette; no se ocultaron ni corrigieron fuera de alcance. No se creó PR remoto ni se hizo push conforme al cierre local del Día 1. La revisión humana de los cambios aún está pendiente.

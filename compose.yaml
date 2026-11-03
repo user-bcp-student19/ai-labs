@@ -7,6 +7,9 @@ services:
   api:
     build: ./api
     environment:
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the environment}
+      JWT_ISSUER: ${JWT_ISSUER:?Set JWT_ISSUER in the environment}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:?Set JWT_AUDIENCE in the environment}
       AUTH_HEALTH_URL: http://auth:8080/q/health
       WORKSHOP_DB_PATH: /data/workshop.db
       WORKSHOP_UPLOAD_DIR: /uploads

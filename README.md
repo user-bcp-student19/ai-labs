@@ -37,6 +37,8 @@ Puedes recorrer los tres componentes. Conserva las evidencias anteriores y añad
 
 Necesitas Docker con Compose y el motor iniciado. Podman Compose es otra opción si ya está preparado en tu equipo.
 
+Antes de arrancar, configura `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` en el entorno con los valores acordados con auth. No tienen valores por defecto; no guardes el secreto en el repositorio.
+
 ```bash
 docker compose up --build
 ```
@@ -65,6 +67,8 @@ python tools/lab.py start auth
 python tools/lab.py setup api
 python tools/lab.py start api
 ```
+
+Antes de ejecutar `start api`, configura `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` en el entorno con los valores acordados con auth.
 
 ```bash
 python tools/lab.py setup web

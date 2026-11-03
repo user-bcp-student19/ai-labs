@@ -5,10 +5,10 @@
 ### Estado del contrato
 
 - **Contrato observado**: este documento describe las rutas, modelos y respuestas de la implementación actual de `api/app/main.py`, `api/app/schemas.py`, `api/app/security.py` y `api/app/uploads.py`. Los ejemplos de respuesta y error se comprobaron con `TestClient`; las llamadas a `backend-health` usaron una respuesta upstream simulada.
-- **Contrato acordado**: no hay un contrato externo aprobado/documentado por separado. Estas son las reglas observadas, no una confirmación de compatibilidad de clientes.
-- **Riesgos pendientes**: el formato del token no es JWT firmado y su secreto está embebido; H-API-01 sigue bloqueado por acuerdo con auth. H-API-04 está Pendiente: `storedAt` expone una ruta del servidor, archivos con el mismo nombre pueden sobrescribirse entre usuarios, el límite se aplica después de que Starlette recibe el multipart y nombres muy largos pueden causar 500. Consultar [HALLAZGOS.md](../HALLAZGOS.md) y [PLAN.md](../PLAN.md).
+- **Contrato acordado**: API espera un JWT firmado con HS256 y claims `sub`, `role`, `exp`, `iss` y `aud`, coordinado con el emisor auth. `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` son obligatorios; no se aceptan tokens del formato Base64 legado.
+- **Riesgos pendientes**: H-API-04 está Pendiente: `storedAt` expone una ruta del servidor, archivos con el mismo nombre pueden sobrescribirse entre usuarios, el límite se aplica después de que Starlette recibe el multipart y nombres muy largos pueden causar 500. Consultar [HALLAZGOS.md](../HALLAZGOS.md) y [PLAN.md](../PLAN.md).
 
-Base local: `http://localhost:8000` (README.md). Todas las rutas de esta API requieren la cabecera exacta `Authorization: Bearer <access-token>`. En el código actual, auth debe proporcionar un token Base64 con los campos `username|role|expiry|secret`, donde `expiry` es tiempo Unix en segundos. La API solo compara el secreto configurado en el código y la expiración; **no es un JWT y no valida firma, emisor ni audiencia**. Obtén el token del flujo de login del laboratorio; no generes ni reutilices este formato en producción.
+Base local: `http://localhost:8000` (README.md). Todas las rutas de esta API requieren `Authorization: Bearer <access-token>`. La API valida la firma HS256 y los claims `exp`, `iss`, `aud`, `sub` y `role`; `sub` se mapea a `username`. Auth debe emitir tokens compatibles con este contrato.
 
 ```http
 Authorization: Bearer <access-token-returned-by-auth>
@@ -87,7 +87,7 @@ Ejemplo completo:
 
 | código | cuándo ocurre |
 |---|---|
-| 401 Unauthorized | Falta la cabecera o el token no se decodifica, no cumple el formato, secreto o expiración esperados. |
+| 401 Unauthorized | Falta la cabecera o el token no es válido, expiró o no cumple la configuración de emisor y audiencia. Respuesta genérica y desafío `WWW-Authenticate: Bearer`. |
 | 403 Forbidden | `owner` no vacío no coincide con la identidad del token. |
 | 405 Method Not Allowed | Se usa un método distinto de `GET` y `POST` para la ruta `/api/tasks`. |
 | 500 Internal Server Error | Error interno no gestionado (por ejemplo, fallo de SQLite); el detalle depende del servidor. |
@@ -95,7 +95,7 @@ Ejemplo completo:
 Ejemplos de cuerpo:
 
 ```json
-{"detail":"Invalid token: invalid token"}
+{"detail":"Invalid or expired token"}
 ```
 
 ```json
@@ -113,7 +113,7 @@ Internal Server Error
 ### 6. Notas de seguridad
 
 - La consulta filtra por el usuario devuelto por `resolve_owner`; el cliente no puede seleccionar otro `owner` con este endpoint.
-- Esa identidad proviene actualmente de un token Base64 sin firma. Quien conozca el secreto del código puede fabricar una identidad; no asumir que esta autorización autentica de forma segura.
+- La identidad se obtiene de un JWT cuya firma, expiración, emisor y audiencia se validan antes de autorizar la consulta.
 - El SQL de lectura usa parámetros SQLite, no concatena el valor de `owner`.
 
 ---
@@ -190,7 +190,7 @@ Ejemplo completo:
 
 | código | cuándo ocurre |
 |---|---|
-| 401 Unauthorized | Falta la cabecera o el token no es válido. |
+| 401 Unauthorized | Falta la cabecera o el token no es válido, expiró o no cumple la configuración de emisor y audiencia. Respuesta genérica y desafío `WWW-Authenticate: Bearer`. |
 | 403 Forbidden | `owner` enviado no coincide con la identidad del token. |
 | 422 Unprocessable Entity | Falta el cuerpo JSON o un campo tiene un tipo incompatible con el modelo (por ejemplo, `title` numérico). |
 | 405 Method Not Allowed | Se usa un método distinto de `GET` y `POST` para la ruta `/api/tasks`. |
@@ -199,7 +199,7 @@ Ejemplo completo:
 Ejemplos de cuerpo:
 
 ```json
-{"detail":"Invalid token: invalid token"}
+{"detail":"Invalid or expired token"}
 ```
 
 ```json
@@ -232,7 +232,7 @@ Internal Server Error
 - El `owner` persistido se obtiene de la identidad; el cliente no puede crear tareas para otro usuario.
 - Los valores del `INSERT` y de la lectura posterior se pasan como parámetros SQLite.
 - `TaskCreate` comprueba tipos, pero no restringe longitudes ni los valores permitidos de `status`/`priority`.
-- El token heredado es Base64 sin firma; consultar el riesgo común descrito al inicio.
+- La identidad de la tarea procede del token validado; el cliente no puede sustituirla enviando otro propietario.
 
 ---
 
@@ -291,7 +291,7 @@ Ejemplo completo:
 
 | código | cuándo ocurre |
 |---|---|
-| 401 Unauthorized | Falta la cabecera o el token no es válido. |
+| 401 Unauthorized | Falta la cabecera o el token no es válido, expiró o no cumple la configuración de emisor y audiencia. Respuesta genérica y desafío `WWW-Authenticate: Bearer`. |
 | 403 Forbidden | `owner` no vacío no coincide con la identidad del token. |
 | 405 Method Not Allowed | Se usa un método HTTP distinto de `GET` para esta ruta. |
 | 500 Internal Server Error | Error interno no gestionado; el detalle depende del servidor. |
@@ -299,7 +299,7 @@ Ejemplo completo:
 Ejemplos de cuerpo:
 
 ```json
-{"detail":"Invalid token: invalid token"}
+{"detail":"Invalid or expired token"}
 ```
 
 ```json
@@ -317,7 +317,7 @@ Internal Server Error
 ### 6. Notas de seguridad
 
 - El `owner` del resultado y el filtro de tareas proceden de `resolve_owner`, no de un valor ajeno enviado por el cliente.
-- El conteo se calcula sobre las tareas recuperadas del repositorio. La identidad sigue dependiendo del token Base64 heredado y no firmado.
+- El conteo se calcula sobre las tareas recuperadas del repositorio y la identidad derivada del token validado.
 
 ---
 
@@ -382,7 +382,7 @@ Ejemplo completo con el directorio por defecto `./uploads` (la ruta real depende
 | código | cuándo ocurre |
 |---|---|
 | 400 Bad Request | El nombre está vacío o consiste solo en puntos. |
-| 401 Unauthorized | Falta la cabecera o el token no es válido. |
+| 401 Unauthorized | Falta la cabecera o el token no es válido, expiró o no cumple la configuración de emisor y audiencia. Respuesta genérica y desafío `WWW-Authenticate: Bearer`. |
 | 413 Payload Too Large | El contenido leído por el handler supera 5 MiB. |
 | 415 Unsupported Media Type | La extensión no está en la lista permitida o falta una extensión reconocida. |
 | 400 Bad Request | El cuerpo multipart está mal formado, por ejemplo, falta el boundary. |
@@ -401,7 +401,7 @@ Ejemplos de cuerpo:
 ```
 
 ```json
-{"detail":"Invalid token: invalid token"}
+{"detail":"Invalid or expired token"}
 ```
 
 ```json
@@ -439,7 +439,7 @@ Internal Server Error
 - El archivo se escribe por bloques y el handler elimina el parcial cuando detecta más de 5 MiB. Starlette ya recibió el multipart antes de aplicar ese límite; no equivale a un límite temprano de tamaño de request.
 - El mismo nombre apunta al mismo archivo, independientemente del usuario: una subida posterior puede sobrescribirlo.
 - `storedAt` expone una ruta interna del servidor. Estos riesgos están pendientes en H-API-04.
-- El `owner` de la respuesta es la identidad obtenida del token heredado.
+- El `owner` de la respuesta es la identidad obtenida del token validado.
 
 ---
 
@@ -503,7 +503,7 @@ Ejemplo completo cuando la llamada simulada lanza `RuntimeError("upstream unavai
 
 | código | cuándo ocurre |
 |---|---|
-| 401 Unauthorized | Falta la cabecera o el token no es válido. |
+| 401 Unauthorized | Falta la cabecera o el token no es válido, expiró o no cumple la configuración de emisor y audiencia. Respuesta genérica y desafío `WWW-Authenticate: Bearer`. |
 | 405 Method Not Allowed | Se usa un método HTTP distinto de `GET` para esta ruta. |
 
 Los errores de conexión upstream no cambian el código de respuesta de la API a error: se representan con HTTP 200 y `status: 0`.
@@ -511,7 +511,7 @@ Los errores de conexión upstream no cambian el código de respuesta de la API a
 Ejemplo de cuerpo:
 
 ```json
-{"detail":"Invalid token: invalid token"}
+{"detail":"Invalid or expired token"}
 ```
 
 ```json
